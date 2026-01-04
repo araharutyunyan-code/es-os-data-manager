@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Elasticsearch & OpenSearch Data Manager - Transfer, Export, Import">
+    <title>Data Manager - Elasticsearch & OpenSearch</title>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    
+    <!-- Styles -->
+    <link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <div class="logo">
+            <h1>
+                <div class="logo-icon">⚡</div>
+                Data Manager
+            </h1>
+        </div>
+        
+        <nav class="nav-section">
+            <div class="nav-label">Main</div>
+            <div class="nav-item active" data-tab="transfer">
+                <span class="icon">🔄</span>
+                <span>Transfer</span>
+            </div>
+            <div class="nav-item" data-tab="export">
+                <span class="icon">📤</span>
+                <span>Export</span>
+            </div>
+            <div class="nav-item" data-tab="import">
+                <span class="icon">📥</span>
+                <span>Import</span>
+            </div>
+            <div class="nav-item" data-tab="operations">
+                <span class="icon">📊</span>
+                <span>Operations</span>
+            </div>
+        </nav>
+        
+        <div class="clusters-list">
+            <div class="nav-label">Clusters</div>
+            <div id="sidebarClusters"></div>
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <!-- Top Bar -->
+        <header class="topbar">
+            <div class="topbar-left">
+                <h2 class="topbar-title" id="pageTitle">Data Transfer</h2>
+            </div>
+            <div class="topbar-actions">
+                <button class="btn btn-secondary" id="btnManageClusters">
+                    <span>⚙️</span>
+                    Manage Clusters
+                </button>
+                <button class="btn btn-primary" id="btnAddCluster">
+                    <span>➕</span>
+                    Add Cluster
+                </button>
+                <button class="btn btn-ghost" id="btnLogout" onclick="window.location.href='/logout'" title="Logout">
+                    <span>🚪</span>
+                    Logout
+                </button>
+            </div>
+        </header>
+
+        <!-- Content Area -->
+        <div class="content">
+            <!-- Active Progress -->
+            <div id="activeProgress"></div>
+
+            <!-- ============================================
+                 Transfer Tab
+                 ============================================ -->
+            <div id="transferTab" class="tab-panel active">
+                <div class="transfer-grid">
+                    <!-- Source Panel -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="card-title">
+                                <span class="icon">📂</span>
+                                Source Cluster
+                            </h3>
+                            <button class="btn btn-sm btn-ghost" id="btnTestSource">Test Connection</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="form-group">
+                                <label class="form-label">Select Cluster</label>
+                                <select class="form-select" id="sourceCluster">
+                                    <option value="">Choose a cluster...</option>
+                                </select>
+                            </div>
+                            
+                            <div class="action-bar">
+                                <div class="selection-info">
+                                    <strong id="sourceSelectedCount">0</strong> indices selected
+                                </div>
+                                <div class="action-bar-right">
+                                    <button class="btn btn-sm btn-ghost" id="btnSelectAllSource">Select All</button>
+                                    <button class="btn btn-sm btn-ghost" id="btnClearSource">Clear</button>
+                                </div>
+                            </div>
+                            
+                            <div class="table-wrapper">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th class="checkbox-cell">
+                                                <input type="checkbox" class="checkbox" id="sourceSelectAll">
+                                            </th>
+                                            <th>Index Name</th>
+                                            <th>Documents</th>
+                                            <th>Size</th>
+                                            <th>Health</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="sourceIndicesTable">
+                                        <tr>
+                                            <td colspan="5">
+                                                <div class="empty-state">
+                                                    <div class="empty-state-icon">📋</div>
+                                                    <div class="empty-state-text">Select a cluster to view indices</div>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Arrow -->
+                    <div class="transfer-arrow">→</div>
+
+                    <!-- Target Panel -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="card-title">
+                                <span class="icon">🎯</span>
+                                Target Cluster
+                            </h3>
+                            <button class="btn btn-sm btn-ghost" id="btnTestTarget">Test Connection</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="form-group">
+                                <label class="form-label">Select Cluster</label>
+                                <select class="form-select" id="targetCluster">
+                                    <option value="">Choose a cluster...</option>
+                                </select>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">Transfer Options</label>
+                                <div class="checkbox-list">
+                                    <label class="checkbox-item">
+                                        <input type="checkbox" id="transferIncludeSettings" checked>
+                                        <span>Settings</span>
+                                    </label>
+                                    <label class="checkbox-item">
+                                        <input type="checkbox" id="transferIncludeMappings" checked>
+                                        <span>Mappings</span>
+                                    </label>
+                                    <label class="checkbox-item">
+                                        <input type="checkbox" id="transferIncludeAliases" checked>
+                                        <span>Aliases</span>
+                                    </label>
+                                </div>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">Batch Size</label>
+                                <input type="number" class="form-input" id="transferBatchSize" value="1000">
+                                <div class="form-hint">Number of documents per batch</div>
+                            </div>
+                            
+                            <button class="btn btn-primary btn-lg" style="width: 100%;" id="btnStartTransfer">
+                                🚀 Start Transfer
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============================================
+                 Export Tab
+                 ============================================ -->
+            <div id="exportTab" class="tab-panel">
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">
+                            <span class="icon">📤</span>
+                            Export Indices
+                        </h3>
+                        <button class="btn btn-sm btn-ghost" id="btnRefreshExport">🔄 Refresh</button>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label">Source Cluster</label>
+                                <select class="form-select" id="exportCluster">
+                                    <option value="">Choose a cluster...</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Batch Size</label>
+                                <input type="number" class="form-input" id="exportBatchSize" value="1000">
+                            </div>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="form-label">Export Options</label>
+                            <div class="checkbox-list">
+                                <label class="checkbox-item">
+                                    <input type="checkbox" id="exportIncludeSettings" checked>
+                                    <span>Settings</span>
+                                </label>
+                                <label class="checkbox-item">
+                                    <input type="checkbox" id="exportIncludeMappings" checked>
+                                    <span>Mappings</span>
+                                </label>
+                                <label class="checkbox-item">
+                                    <input type="checkbox" id="exportIncludeAliases" checked>
+                                    <span>Aliases</span>
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <div class="action-bar">
+                            <div class="selection-info">
+                                <strong id="exportSelectedCount">0</strong> indices selected
+                            </div>
+                            <div class="action-bar-right">
+                                <button class="btn btn-sm btn-ghost" id="btnSelectAllExport">Select All</button>
+                                <button class="btn btn-sm btn-ghost" id="btnClearExport">Clear</button>
+                                <button class="btn btn-primary" id="btnExportZip">
+                                    📦 Export as ZIP
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th class="checkbox-cell">
+                                            <input type="checkbox" class="checkbox" id="exportSelectAll">
+                                        </th>
+                                        <th>Index Name</th>
+                                        <th>Documents</th>
+                                        <th>Size</th>
+                                        <th>Health</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="exportIndicesTable">
+                                    <tr>
+                                        <td colspan="6">
+                                            <div class="empty-state">
+                                                <div class="empty-state-icon">📋</div>
+                                                <div class="empty-state-text">Select a cluster to view indices</div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============================================
+                 Import Tab
+                 ============================================ -->
+            <div id="importTab" class="tab-panel">
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">
+                            <span class="icon">📥</span>
+                            Import Indices
+                        </h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label class="form-label">Target Cluster</label>
+                            <select class="form-select" id="importCluster">
+                                <option value="">Choose a cluster...</option>
+                            </select>
+                        </div>
+                        
+                        <div class="drop-zone" id="dropZone">
+                            <div class="drop-zone-icon">📁</div>
+                            <div class="drop-zone-text">Drag & drop files here</div>
+                            <div class="drop-zone-hint">or click to browse • Supports JSON and ZIP files</div>
+                            <input type="file" class="hidden" id="importFileInput" accept=".json,.zip" multiple>
+                        </div>
+                        
+                        <div id="importStatus" class="mt-4"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============================================
+                 Operations Tab
+                 ============================================ -->
+            <div id="operationsTab" class="tab-panel">
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">
+                            <span class="icon">📊</span>
+                            Active Operations
+                        </h3>
+                        <div class="card-actions">
+                            <button class="btn btn-sm btn-ghost" id="btnRefreshOps">🔄 Refresh</button>
+                            <button class="btn btn-sm btn-ghost" id="btnClearCompleted">Clear Completed</button>
+                        </div>
+                    </div>
+                    <div class="card-body" id="operationsList">
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📭</div>
+                            <div class="empty-state-title">No active operations</div>
+                            <div class="empty-state-text">Operations will appear here when you start a transfer, export, or import.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- ============================================
+         Add Cluster Modal
+         ============================================ -->
+    <div class="modal-overlay" id="addClusterModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 class="modal-title">Add New Cluster</h3>
+                <button class="modal-close" id="closeAddModal">×</button>
+            </div>
+            <div class="modal-body">
+                <div id="addClusterError" class="text-danger mb-4" style="display: none;"></div>
+
+                <div class="form-group">
+                    <label class="form-label">Cluster Name</label>
+                    <input type="text" class="form-input" id="clusterName" placeholder="My Cluster">
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Cluster Type</label>
+                    <select class="form-select" id="clusterType">
+                        <option value="ELASTICSEARCH">Elasticsearch</option>
+                        <option value="OPENSEARCH">OpenSearch</option>
+                    </select>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Host</label>
+                        <input type="text" class="form-input" id="clusterHost" value="localhost">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Port</label>
+                        <input type="number" class="form-input" id="clusterPort" value="9200">
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Username (optional)</label>
+                        <input type="text" class="form-input" id="clusterUser" placeholder="elastic">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Password (optional)</label>
+                        <input type="password" class="form-input" id="clusterPass">
+                    </div>
+                </div>
+
+                <label class="checkbox-item">
+                    <input type="checkbox" id="clusterSSL">
+                    <span>Use SSL/TLS</span>
+                </label>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="cancelAddCluster">Cancel</button>
+                <button class="btn btn-primary" id="saveClusterBtn">Save & Test</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================
+         Manage Clusters Modal
+         ============================================ -->
+    <div class="modal-overlay" id="manageClustersModal">
+        <div class="modal modal-lg">
+            <div class="modal-header">
+                <h3 class="modal-title">Manage Clusters</h3>
+                <button class="modal-close" id="closeManageModal">×</button>
+            </div>
+            <div class="modal-body" id="clustersList">
+                <div class="empty-state">
+                    <div class="empty-state-icon">🔌</div>
+                    <div class="empty-state-title">No clusters configured</div>
+                    <div class="empty-state-text">Add a cluster to get started.</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="closeManageClusters">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================
+         Document Viewer Modal
+         ============================================ -->
+    <div class="modal-overlay" id="documentViewerModal">
+        <div class="modal modal-xl">
+            <div class="modal-header">
+                <h3 class="modal-title" id="docViewerTitle">Index Documents</h3>
+                <button class="modal-close" id="closeDocViewerModal">×</button>
+            </div>
+            <div class="modal-body" style="padding: 0; height: 70vh;">
+                <div class="document-viewer">
+                    <!-- Document List Panel -->
+                    <div class="card document-list-panel" style="margin: 0; border-radius: 0; border: none; border-right: 1px solid var(--border-color);">
+                        <div class="document-list-header">
+                            <div class="search-box" style="flex: 1;">
+                                <span class="search-icon">🔍</span>
+                                <input type="text" class="form-input" id="docSearchInput" placeholder="Search documents..." style="padding-left: 36px;">
+                            </div>
+                        </div>
+                        <div class="document-list-content" id="documentListContent">
+                            <div class="empty-state">
+                                <div class="empty-state-icon">📄</div>
+                                <p>Loading documents...</p>
+                            </div>
+                        </div>
+                        <div class="pagination">
+                            <button class="pagination-btn" id="btnPrevPage" disabled>←</button>
+                            <span class="pagination-info" id="pageInfo">1 / 1</span>
+                            <button class="pagination-btn" id="btnNextPage" disabled>→</button>
+                            <select class="form-select" id="docPageSize" style="width: 80px; margin-left: 12px;">
+                                <option value="10">10</option>
+                                <option value="20" selected>20</option>
+                                <option value="50">50</option>
+                                <option value="100">100</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Document Detail Panel -->
+                    <div class="card document-detail-panel" style="margin: 0; border-radius: 0; border: none;">
+                        <div class="document-list-header">
+                            <span class="text-secondary">Document Details</span>
+                            <span class="text-muted" id="docTotalCount">0 documents</span>
+                        </div>
+                        <div class="json-viewer" id="jsonViewer">
+                            <div class="empty-state">
+                                <div class="empty-state-icon">📄</div>
+                                <p>Select a document to view</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="btnCloseDocViewer">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Scripts -->
+    <script src="js/main.js"></script>
+</body>
+</html>

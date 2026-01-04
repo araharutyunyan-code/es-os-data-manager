@@ -1,0 +1,50 @@
+version: '3.8'
+
+# Simple OpenSearch setup for local development (security disabled)
+# Usage: docker-compose -f docker-compose-opensearch-only.yml up -d
+
+services:
+  opensearch:
+    image: opensearchproject/opensearch:2.11.0
+    container_name: opensearch-local
+    environment:
+      - cluster.name=local-cluster
+      - node.name=local-node
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - DISABLE_SECURITY_PLUGIN=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    ports:
+      - "9250:9200"
+      - "9600:9600"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9250 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Optional: OpenSearch Dashboards UI
+  dashboards:
+    image: opensearchproject/opensearch-dashboards:2.11.0
+    container_name: opensearch-dashboards-local
+    environment:
+      - OPENSEARCH_HOSTS=["http://opensearch:9250"]
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+    ports:
+      - "5601:5601"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+volumes:
+  opensearch-data:
