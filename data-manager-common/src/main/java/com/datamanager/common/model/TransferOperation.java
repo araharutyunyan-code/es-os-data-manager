@@ -1,10 +1,8 @@
 package com.datamanager.common.model;
 
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import lombok.*;
 
+import java.io.Serial;
 import java.io.Serializable;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -19,6 +17,7 @@ import java.util.List;
 @AllArgsConstructor
 public class TransferOperation implements Serializable {
     
+    @Serial
     private static final long serialVersionUID = 1L;
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     
@@ -45,6 +44,7 @@ public class TransferOperation implements Serializable {
     @Builder.Default
     private boolean includeAliases = true;
     
+    @Getter
     public enum TransferType {
         CLUSTER_TO_CLUSTER("Cluster → Cluster"),
         CLUSTER_TO_FILE("Export to File"),
@@ -55,12 +55,10 @@ public class TransferOperation implements Serializable {
         TransferType(String displayName) {
             this.displayName = displayName;
         }
-        
-        public String getDisplayName() {
-            return displayName;
-        }
+
     }
     
+    @Getter
     public enum TransferStatus {
         PENDING("Pending", "#757575"),
         RUNNING("Running", "#1976d2"),
@@ -76,14 +74,7 @@ public class TransferOperation implements Serializable {
             this.displayName = displayName;
             this.color = color;
         }
-        
-        public String getDisplayName() {
-            return displayName;
-        }
-        
-        public String getColor() {
-            return color;
-        }
+
     }
     
     public double getProgress() {

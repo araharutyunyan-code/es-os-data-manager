@@ -26,7 +26,6 @@ import org.springframework.stereotype.Service;
 
 import java.io.*;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * OpenSearch implementation of ClusterService
@@ -36,7 +35,11 @@ import java.util.stream.Collectors;
 public class OpenSearchService implements ClusterService {
 
     private final ObjectMapper objectMapper;
-    
+
+    // AWS OpenSearch default limit is 10MB. We use 5MB to be safe (headers + overhead).
+    private static final long MAX_BULK_SIZE_BYTES = 5 * 1024 * 1024;
+    private static final int MAX_BULK_DOC_COUNT = 500;
+
     public OpenSearchService() {
         this.objectMapper = new ObjectMapper();
         // Include null values in serialization
@@ -88,7 +91,7 @@ public class OpenSearchService implements ClusterService {
             var catResponse = client.cat().indices();
 
             List<IndexInfo> indices = new ArrayList<>();
-            
+
             for (var record : catResponse.valueBody()) {
                 IndexInfo indexInfo = IndexInfo.builder()
                         .name(record.index())
@@ -99,7 +102,7 @@ public class OpenSearchService implements ClusterService {
                         .build();
                 indices.add(indexInfo);
             }
-            
+
             indices.sort(Comparator.comparing(IndexInfo::getName));
             return indices;
         } catch (Exception e) {
@@ -120,7 +123,7 @@ public class OpenSearchService implements ClusterService {
         try {
             transport = createTransport(config);
             OpenSearchClient client = new OpenSearchClient(transport);
-            
+
             try (BufferedWriter writer = new BufferedWriter(new FileWriter(filePath))) {
                 Map<String, Object> exportData = new HashMap<>();
                 List<Map<String, Object>> indicesData = new ArrayList<>();
@@ -171,10 +174,10 @@ public class OpenSearchService implements ClusterService {
                     boolean hasMoreData = true;
 
                     SearchResponse<Map> searchResponse = client.search(s -> s
-                            .index(indexName)
-                            .size(batchSize)
-                            .scroll(t -> t.time("1m"))
-                            .query(q -> q.matchAll(new MatchAllQuery.Builder().build())),
+                                    .index(indexName)
+                                    .size(batchSize)
+                                    .scroll(t -> t.time("1m"))
+                                    .query(q -> q.matchAll(new MatchAllQuery.Builder().build())),
                             Map.class);
 
                     while (hasMoreData) {
@@ -191,10 +194,10 @@ public class OpenSearchService implements ClusterService {
                         } else {
                             final String finalScrollId = scrollId;
                             ScrollResponse<Map> scrollResponse = client.scroll(sc -> sc
-                                    .scrollId(finalScrollId)
-                                    .scroll(t -> t.time("1m")),
+                                            .scrollId(finalScrollId)
+                                            .scroll(t -> t.time("1m")),
                                     Map.class);
-                            
+
                             if (scrollResponse.hits().hits().isEmpty()) {
                                 hasMoreData = false;
                             } else {
@@ -246,7 +249,7 @@ public class OpenSearchService implements ClusterService {
         try {
             transport = createTransport(config);
             OpenSearchClient client = new OpenSearchClient(transport);
-            
+
             try (BufferedReader reader = new BufferedReader(new FileReader(filePath))) {
                 StringBuilder jsonBuilder = new StringBuilder();
                 String line;
@@ -299,9 +302,9 @@ public class OpenSearchService implements ClusterService {
     @Override
     @SuppressWarnings("unchecked")
     public void transferBetweenClusters(ClusterConfig sourceConfig, ClusterConfig targetConfig,
-                                       List<String> indices, int batchSize,
-                                       boolean includeSettings, boolean includeMappings,
-                                       boolean includeAliases)
+                                        List<String> indices, int batchSize,
+                                        boolean includeSettings, boolean includeMappings,
+                                        boolean includeAliases)
             throws DataTransferException {
         RestClientTransport sourceTransport = null;
         RestClientTransport targetTransport = null;
@@ -340,55 +343,33 @@ public class OpenSearchService implements ClusterService {
                 boolean hasMoreData = true;
 
                 SearchResponse<Map> searchResponse = sourceClient.search(s -> s
-                        .index(indexName)
-                        .size(batchSize)
-                        .scroll(t -> t.time("2m"))
-                        .query(q -> q.matchAll(new MatchAllQuery.Builder().build())),
+                                .index(indexName)
+                                .size(batchSize)
+                                .scroll(t -> t.time("2m"))
+                                .query(q -> q.matchAll(new MatchAllQuery.Builder().build())),
                         Map.class);
 
                 while (hasMoreData) {
-                    List<BulkOperation> bulkOperations = new ArrayList<>();
+                    List<Hit<Map>> hits = searchResponse.hits().hits();
 
-                    for (Hit<Map> hit : searchResponse.hits().hits()) {
-                        final String docId = hit.id();
-                        final Map source = hit.source();
-                        bulkOperations.add(BulkOperation.of(b -> b
-                                .index(idx -> idx.index(indexName).id(docId).document(source))));
-                    }
-
-                    if (!bulkOperations.isEmpty()) {
-                        BulkResponse bulkResponse = targetClient.bulk(br -> br.operations(bulkOperations));
-                        if (bulkResponse.errors()) {
-                            log.warn("Some documents failed to transfer in index {}", indexName);
-                        }
-                    }
+                    // Process this scroll page using our safe chunking logic
+                    processScrollHits(targetClient, indexName, hits);
 
                     scrollId = searchResponse.scrollId();
-                    if (scrollId == null || searchResponse.hits().hits().isEmpty()) {
+                    if (scrollId == null || hits.isEmpty()) {
                         hasMoreData = false;
                     } else {
                         final String finalScrollId = scrollId;
                         ScrollResponse<Map> scrollResponse = sourceClient.scroll(sc -> sc
-                                .scrollId(finalScrollId)
-                                .scroll(t -> t.time("2m")),
+                                        .scrollId(finalScrollId)
+                                        .scroll(t -> t.time("2m")),
                                 Map.class);
-                        
+
                         if (scrollResponse.hits().hits().isEmpty()) {
                             hasMoreData = false;
                         } else {
-                            bulkOperations.clear();
-                            for (Hit<Map> hit : scrollResponse.hits().hits()) {
-                                final String docId = hit.id();
-                                final Map source = hit.source();
-                                bulkOperations.add(BulkOperation.of(b -> b
-                                        .index(idx -> idx.index(indexName).id(docId).document(source))));
-                            }
-                            if (!bulkOperations.isEmpty()) {
-                                BulkResponse bulkResponse = targetClient.bulk(br -> br.operations(bulkOperations));
-                                if (bulkResponse.errors()) {
-                                    log.warn("Some documents failed to transfer in index {}", indexName);
-                                }
-                            }
+                            // Process next page
+                            processScrollHits(targetClient, indexName, scrollResponse.hits().hits());
                             scrollId = scrollResponse.scrollId();
                             if (scrollId == null) {
                                 hasMoreData = false;
@@ -411,7 +392,7 @@ public class OpenSearchService implements ClusterService {
                             for (var aliasEntry : indexAliases.aliases().entrySet()) {
                                 String aliasName = aliasEntry.getKey();
                                 var aliasDef = aliasEntry.getValue();
-                                
+
                                 targetClient.indices().putAlias(a -> {
                                     var builder = a.index(indexName).name(aliasName);
                                     if (aliasDef.indexRouting() != null) {
@@ -447,15 +428,59 @@ public class OpenSearchService implements ClusterService {
         }
     }
 
+    /**
+     * Helper to process a list of hits and send them in size-safe bulk batches.
+     */
+    @SuppressWarnings("unchecked")
+    private void processScrollHits(OpenSearchClient targetClient, String indexName, List<Hit<Map>> hits) throws IOException {
+        List<BulkOperation> bulkOperations = new ArrayList<>();
+        long currentBatchBytes = 0;
+
+        for (Hit<Map> hit : hits) {
+            final String docId = hit.id();
+            final Map source = hit.source();
+
+            // Estimate size
+            byte[] docBytes = objectMapper.writeValueAsBytes(source);
+            long docSize = docBytes.length;
+
+            if (!bulkOperations.isEmpty() &&
+                    (currentBatchBytes + docSize > MAX_BULK_SIZE_BYTES || bulkOperations.size() >= MAX_BULK_DOC_COUNT)) {
+
+                BulkResponse bulkResponse = targetClient.bulk(br -> br.operations(bulkOperations));
+                if (bulkResponse.errors()) {
+                    log.warn("Some documents failed to transfer in index {}", indexName);
+                }
+
+                bulkOperations.clear();
+                currentBatchBytes = 0;
+            }
+
+            bulkOperations.add(BulkOperation.of(b -> b
+                    .index(idx -> idx.index(indexName).id(docId).document(source))));
+            currentBatchBytes += docSize;
+        }
+
+        if (!bulkOperations.isEmpty()) {
+            BulkResponse bulkResponse = targetClient.bulk(br -> br.operations(bulkOperations));
+            if (bulkResponse.errors()) {
+                log.warn("Some documents failed to transfer in index {}", indexName);
+            }
+        }
+    }
+
     @Override
     public void createIndex(ClusterConfig config, String indexName,
-                           Map<String, Object> settings, Map<String, Object> mappings)
+                            Map<String, Object> settings, Map<String, Object> mappings)
             throws ClusterConnectionException {
         RestClientTransport transport = null;
         try {
             transport = createTransport(config);
             OpenSearchClient client = new OpenSearchClient(transport);
             CreateIndexRequest.Builder builder = new CreateIndexRequest.Builder().index(indexName);
+            // In a real scenario, you would map 'settings' and 'mappings' to the Builder here.
+            // Simplified for brevity as per original code structure, but standard implementation
+            // requires converting Maps to Type objects or raw JSON.
             client.indices().create(builder.build());
             log.info("Created index: {}", indexName);
         } catch (Exception e) {
@@ -499,8 +524,8 @@ public class OpenSearchService implements ClusterService {
 
     @Override
     public Map<String, Object> exportIndexData(ClusterConfig config, String indexName, int batchSize,
-                                                boolean includeSettings, boolean includeMappings,
-                                                boolean includeAliases) throws DataTransferException {
+                                               boolean includeSettings, boolean includeMappings,
+                                               boolean includeAliases) throws DataTransferException {
         try {
             return exportSingleIndex(config, indexName, batchSize, includeSettings, includeMappings, includeAliases);
         } catch (Exception e) {
@@ -519,33 +544,33 @@ public class OpenSearchService implements ClusterService {
 
     @Override
     @SuppressWarnings("unchecked")
-    public Map<String, Object> searchDocuments(ClusterConfig config, String indexName, String query, int page, int size) 
+    public Map<String, Object> searchDocuments(ClusterConfig config, String indexName, String query, int page, int size)
             throws ClusterConnectionException {
         RestClientTransport transport = null;
         try {
             transport = createTransport(config);
             OpenSearchClient client = new OpenSearchClient(transport);
-            
+
             int from = page * size;
-            
+
             SearchResponse<Map> response;
             if (query != null && !query.trim().isEmpty()) {
                 response = client.search(s -> s
-                        .index(indexName)
-                        .from(from)
-                        .size(size)
-                        .query(q -> q
-                                .queryString(qs -> qs.query("*" + query + "*"))),
+                                .index(indexName)
+                                .from(from)
+                                .size(size)
+                                .query(q -> q
+                                        .queryString(qs -> qs.query("*" + query + "*"))),
                         Map.class);
             } else {
                 response = client.search(s -> s
-                        .index(indexName)
-                        .from(from)
-                        .size(size)
-                        .query(q -> q.matchAll(new MatchAllQuery.Builder().build())),
+                                .index(indexName)
+                                .from(from)
+                                .size(size)
+                                .query(q -> q.matchAll(new MatchAllQuery.Builder().build())),
                         Map.class);
             }
-            
+
             List<Map<String, Object>> documents = new ArrayList<>();
             for (Hit<Map> hit : response.hits().hits()) {
                 Map<String, Object> doc = new HashMap<>();
@@ -554,15 +579,15 @@ public class OpenSearchService implements ClusterService {
                 doc.put("_source", hit.source());
                 documents.add(doc);
             }
-            
+
             long total = response.hits().total() != null ? response.hits().total().value() : 0;
-            
+
             Map<String, Object> result = new HashMap<>();
             result.put("documents", documents);
             result.put("total", total);
             result.put("page", page);
             result.put("size", size);
-            
+
             return result;
         } catch (Exception e) {
             log.error("Failed to search documents in index {}", indexName, e);
@@ -574,24 +599,24 @@ public class OpenSearchService implements ClusterService {
 
     @Override
     @SuppressWarnings("unchecked")
-    public Map<String, Object> getDocument(ClusterConfig config, String indexName, String docId) 
+    public Map<String, Object> getDocument(ClusterConfig config, String indexName, String docId)
             throws ClusterConnectionException {
         RestClientTransport transport = null;
         try {
             transport = createTransport(config);
             OpenSearchClient client = new OpenSearchClient(transport);
-            
+
             var response = client.get(g -> g.index(indexName).id(docId), Map.class);
-            
+
             if (!response.found()) {
                 return null;
             }
-            
+
             Map<String, Object> doc = new HashMap<>();
             doc.put("_id", response.id());
             doc.put("_index", response.index());
             doc.put("_source", response.source());
-            
+
             return doc;
         } catch (Exception e) {
             log.error("Failed to get document {} from index {}", docId, indexName, e);
@@ -634,19 +659,33 @@ public class OpenSearchService implements ClusterService {
 
     @SuppressWarnings("unchecked")
     private void bulkImportDocuments(OpenSearchClient client, String indexName,
-                                    List<Map<String, Object>> documents) throws IOException {
-        int batchSize = 1000;
-        for (int i = 0; i < documents.size(); i += batchSize) {
-            List<Map<String, Object>> batch = documents.subList(i, Math.min(i + batchSize, documents.size()));
+                                     List<Map<String, Object>> documents) throws IOException {
+        List<BulkOperation> bulkOperations = new ArrayList<>();
+        long currentBatchBytes = 0;
 
-            List<BulkOperation> bulkOperations = batch.stream()
-                    .map(doc -> {
-                        final String docId = (String) doc.get("_id");
-                        final Object source = doc.get("_source");
-                        return BulkOperation.of(b -> b.index(idx -> idx.index(indexName).id(docId).document(source)));
-                    })
-                    .collect(Collectors.toList());
+        for (Map<String, Object> doc : documents) {
+            final String docId = (String) doc.get("_id");
+            final Object source = doc.get("_source");
 
+            // Calculate approximate JSON size
+            byte[] docBytes = objectMapper.writeValueAsBytes(source);
+            long docSize = docBytes.length;
+
+            if (!bulkOperations.isEmpty() &&
+                    (currentBatchBytes + docSize > MAX_BULK_SIZE_BYTES || bulkOperations.size() >= MAX_BULK_DOC_COUNT)) {
+
+                log.debug("Flushing bulk batch for import: {} docs, {} bytes", bulkOperations.size(), currentBatchBytes);
+                client.bulk(br -> br.operations(bulkOperations));
+
+                bulkOperations.clear();
+                currentBatchBytes = 0;
+            }
+
+            bulkOperations.add(BulkOperation.of(b -> b.index(idx -> idx.index(indexName).id(docId).document(source))));
+            currentBatchBytes += docSize;
+        }
+
+        if (!bulkOperations.isEmpty()) {
             client.bulk(br -> br.operations(bulkOperations));
         }
     }
@@ -663,10 +702,10 @@ public class OpenSearchService implements ClusterService {
             for (Map.Entry<String, Object> entry : aliases.entrySet()) {
                 String aliasName = entry.getKey();
                 Map<String, Object> aliasDef = (Map<String, Object>) entry.getValue();
-                
+
                 client.indices().putAlias(a -> {
                     var builder = a.index(indexName).name(aliasName);
-                    
+
                     if (aliasDef.containsKey("index_routing")) {
                         builder.indexRouting((String) aliasDef.get("index_routing"));
                     }
@@ -676,7 +715,7 @@ public class OpenSearchService implements ClusterService {
                     if (aliasDef.containsKey("is_write_index")) {
                         builder.isWriteIndex((Boolean) aliasDef.get("is_write_index"));
                     }
-                    
+
                     return builder;
                 });
                 log.info("Created alias {} for index {}", aliasName, indexName);
@@ -688,8 +727,8 @@ public class OpenSearchService implements ClusterService {
 
     @SuppressWarnings("unchecked")
     public Map<String, Object> exportSingleIndex(ClusterConfig config, String indexName,
-                                                  int batchSize, boolean includeSettings,
-                                                  boolean includeMappings, boolean includeAliases) {
+                                                 int batchSize, boolean includeSettings,
+                                                 boolean includeMappings, boolean includeAliases) {
         RestClientTransport transport = null;
         try {
             transport = createTransport(config);
@@ -741,10 +780,10 @@ public class OpenSearchService implements ClusterService {
             boolean hasMoreData = true;
 
             SearchResponse<Map> searchResponse = client.search(s -> s
-                    .index(indexName)
-                    .size(batchSize)
-                    .scroll(t -> t.time("1m"))
-                    .query(q -> q.matchAll(new MatchAllQuery.Builder().build())),
+                            .index(indexName)
+                            .size(batchSize)
+                            .scroll(t -> t.time("1m"))
+                            .query(q -> q.matchAll(new MatchAllQuery.Builder().build())),
                     Map.class);
 
             while (hasMoreData) {
@@ -761,8 +800,8 @@ public class OpenSearchService implements ClusterService {
                 } else {
                     final String finalScrollId = scrollId;
                     ScrollResponse<Map> scrollResponse = client.scroll(sc -> sc
-                            .scrollId(finalScrollId)
-                            .scroll(t -> t.time("1m")),
+                                    .scrollId(finalScrollId)
+                                    .scroll(t -> t.time("1m")),
                             Map.class);
 
                     if (scrollResponse.hits().hits().isEmpty()) {
@@ -813,11 +852,11 @@ public class OpenSearchService implements ClusterService {
 
             // Check if index exists first
             boolean exists = client.indices().exists(e -> e.index(indexName)).value();
-            
+
             if (!exists) {
                 Map<String, Object> settings = (Map<String, Object>) indexData.get("settings");
                 Map<String, Object> mappings = (Map<String, Object>) indexData.get("mappings");
-                
+
                 try {
                     createIndex(config, indexName, settings, mappings);
                 } catch (Exception e) {

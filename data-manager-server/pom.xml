@@ -13,6 +13,8 @@
 
     <artifactId>data-manager-server</artifactId>
     <packaging>jar</packaging>
+    <name>Data Manager - Server</name>
+
 
     <dependencies>
         <dependency>

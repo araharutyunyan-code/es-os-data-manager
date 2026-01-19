@@ -26,7 +26,6 @@ import org.springframework.stereotype.Service;
 
 import java.io.*;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * Elasticsearch implementation of ClusterService
@@ -36,7 +35,10 @@ import java.util.stream.Collectors;
 public class ElasticsearchService implements ClusterService {
 
     private final ObjectMapper objectMapper;
-    
+
+    private static final long MAX_BULK_SIZE_BYTES = 5 * 1024 * 1024;
+    private static final int MAX_BULK_DOC_COUNT = 500;
+
     public ElasticsearchService() {
         this.objectMapper = new ObjectMapper();
         // Include null values in serialization
@@ -89,18 +91,18 @@ public class ElasticsearchService implements ClusterService {
             var catResponse = client.cat().indices();
 
             List<IndexInfo> indices = new ArrayList<>();
-            
+
             for (var record : catResponse.valueBody()) {
                 IndexInfo indexInfo = IndexInfo.builder()
                         .name(record.index())
                         .documentCount(record.docsCount() != null ? Long.parseLong(record.docsCount()) : 0)
                         .size(record.storeSize() != null ? record.storeSize() : "0")
-                        .health(record.health() != null ? record.health().toString() : "unknown")
+                        .health(record.health() != null ? record.health() : "unknown")
                         .status(record.status())
                         .build();
                 indices.add(indexInfo);
             }
-            
+
             // Sort by name
             indices.sort(Comparator.comparing(IndexInfo::getName));
             return indices;
@@ -121,7 +123,7 @@ public class ElasticsearchService implements ClusterService {
         try {
             transport = createTransport(config);
             ElasticsearchClient client = new ElasticsearchClient(transport);
-            
+
             try (BufferedWriter writer = new BufferedWriter(new FileWriter(filePath))) {
                 Map<String, Object> exportData = new HashMap<>();
                 List<Map<String, Object>> indicesData = new ArrayList<>();
@@ -175,10 +177,10 @@ public class ElasticsearchService implements ClusterService {
                     boolean hasMoreData = true;
 
                     SearchResponse<ObjectNode> searchResponse = client.search(s -> s
-                            .index(indexName)
-                            .size(batchSize)
-                            .scroll(t -> t.time("1m"))
-                            .query(q -> q.matchAll(new MatchAllQuery.Builder().build())),
+                                    .index(indexName)
+                                    .size(batchSize)
+                                    .scroll(t -> t.time("1m"))
+                                    .query(q -> q.matchAll(new MatchAllQuery.Builder().build())),
                             ObjectNode.class);
 
                     while (hasMoreData) {
@@ -195,10 +197,10 @@ public class ElasticsearchService implements ClusterService {
                         } else {
                             final String finalScrollId = scrollId;
                             ScrollResponse<ObjectNode> scrollResponse = client.scroll(sc -> sc
-                                    .scrollId(finalScrollId)
-                                    .scroll(t -> t.time("1m")),
+                                            .scrollId(finalScrollId)
+                                            .scroll(t -> t.time("1m")),
                                     ObjectNode.class);
-                            
+
                             if (scrollResponse.hits().hits().isEmpty()) {
                                 hasMoreData = false;
                             } else {
@@ -251,7 +253,7 @@ public class ElasticsearchService implements ClusterService {
         try {
             transport = createTransport(config);
             ElasticsearchClient client = new ElasticsearchClient(transport);
-            
+
             try (BufferedReader reader = new BufferedReader(new FileReader(filePath))) {
                 StringBuilder jsonBuilder = new StringBuilder();
                 String line;
@@ -304,9 +306,9 @@ public class ElasticsearchService implements ClusterService {
 
     @Override
     public void transferBetweenClusters(ClusterConfig sourceConfig, ClusterConfig targetConfig,
-                                       List<String> indices, int batchSize,
-                                       boolean includeSettings, boolean includeMappings,
-                                       boolean includeAliases)
+                                        List<String> indices, int batchSize,
+                                        boolean includeSettings, boolean includeMappings,
+                                        boolean includeAliases)
             throws DataTransferException {
         RestClientTransport sourceTransport = null;
         RestClientTransport targetTransport = null;
@@ -345,61 +347,34 @@ public class ElasticsearchService implements ClusterService {
                 boolean hasMoreData = true;
 
                 SearchResponse<ObjectNode> searchResponse = sourceClient.search(s -> s
-                        .index(indexName)
-                        .size(batchSize)
-                        .scroll(t -> t.time("2m"))
-                        .query(q -> q.matchAll(new MatchAllQuery.Builder().build())),
+                                .index(indexName)
+                                .size(batchSize)
+                                .scroll(t -> t.time("2m"))
+                                .query(q -> q.matchAll(new MatchAllQuery.Builder().build())),
                         ObjectNode.class);
 
                 while (hasMoreData) {
-                    List<BulkOperation> bulkOperations = new ArrayList<>();
+                    List<Hit<ObjectNode>> hits = searchResponse.hits().hits();
 
-                    for (Hit<ObjectNode> hit : searchResponse.hits().hits()) {
-                        final String docId = hit.id();
-                        final ObjectNode source = hit.source();
-                        bulkOperations.add(BulkOperation.of(b -> b
-                                .index(idx -> idx
-                                        .index(indexName)
-                                        .id(docId)
-                                        .document(source))));
-                    }
-
-                    if (!bulkOperations.isEmpty()) {
-                        BulkResponse bulkResponse = targetClient.bulk(br -> br.operations(bulkOperations));
-                        if (bulkResponse.errors()) {
-                            log.warn("Some documents failed to transfer in index {}", indexName);
-                        }
-                    }
+                    // Process using safe chunking
+                    processScrollHits(targetClient, indexName, hits);
 
                     scrollId = searchResponse.scrollId();
-                    if (scrollId == null || searchResponse.hits().hits().isEmpty()) {
+                    if (scrollId == null || hits.isEmpty()) {
                         hasMoreData = false;
                     } else {
                         final String finalScrollId = scrollId;
                         ScrollResponse<ObjectNode> scrollResponse = sourceClient.scroll(sc -> sc
-                                .scrollId(finalScrollId)
-                                .scroll(t -> t.time("2m")),
+                                        .scrollId(finalScrollId)
+                                        .scroll(t -> t.time("2m")),
                                 ObjectNode.class);
-                        
+
                         if (scrollResponse.hits().hits().isEmpty()) {
                             hasMoreData = false;
                         } else {
-                            bulkOperations.clear();
-                            for (Hit<ObjectNode> hit : scrollResponse.hits().hits()) {
-                                final String docId = hit.id();
-                                final ObjectNode source = hit.source();
-                                bulkOperations.add(BulkOperation.of(b -> b
-                                        .index(idx -> idx
-                                                .index(indexName)
-                                                .id(docId)
-                                                .document(source))));
-                            }
-                            if (!bulkOperations.isEmpty()) {
-                                BulkResponse bulkResponse = targetClient.bulk(br -> br.operations(bulkOperations));
-                                if (bulkResponse.errors()) {
-                                    log.warn("Some documents failed to transfer in index {}", indexName);
-                                }
-                            }
+                            // Process next page
+                            processScrollHits(targetClient, indexName, scrollResponse.hits().hits());
+
                             scrollId = scrollResponse.scrollId();
                             if (scrollId == null) {
                                 hasMoreData = false;
@@ -422,7 +397,7 @@ public class ElasticsearchService implements ClusterService {
                             for (var aliasEntry : indexAliases.aliases().entrySet()) {
                                 String aliasName = aliasEntry.getKey();
                                 var aliasDef = aliasEntry.getValue();
-                                
+
                                 targetClient.indices().putAlias(a -> {
                                     var builder = a.index(indexName).name(aliasName);
                                     if (aliasDef.indexRouting() != null) {
@@ -459,9 +434,49 @@ public class ElasticsearchService implements ClusterService {
         }
     }
 
+    /**
+     * Helper to process a list of hits and send them in size-safe bulk batches.
+     */
+    private void processScrollHits(ElasticsearchClient targetClient, String indexName, List<Hit<ObjectNode>> hits) throws IOException {
+        List<BulkOperation> bulkOperations = new ArrayList<>();
+        long currentBatchBytes = 0;
+
+        for (Hit<ObjectNode> hit : hits) {
+            final String docId = hit.id();
+            final ObjectNode source = hit.source();
+
+            // Estimate size
+            byte[] docBytes = objectMapper.writeValueAsBytes(source);
+            long docSize = docBytes.length;
+
+            if (!bulkOperations.isEmpty() &&
+                    (currentBatchBytes + docSize > MAX_BULK_SIZE_BYTES || bulkOperations.size() >= MAX_BULK_DOC_COUNT)) {
+
+                BulkResponse bulkResponse = targetClient.bulk(br -> br.operations(bulkOperations));
+                if (bulkResponse.errors()) {
+                    log.warn("Some documents failed to transfer in index {}", indexName);
+                }
+
+                bulkOperations.clear();
+                currentBatchBytes = 0;
+            }
+
+            bulkOperations.add(BulkOperation.of(b -> b
+                    .index(idx -> idx.index(indexName).id(docId).document(source))));
+            currentBatchBytes += docSize;
+        }
+
+        if (!bulkOperations.isEmpty()) {
+            BulkResponse bulkResponse = targetClient.bulk(br -> br.operations(bulkOperations));
+            if (bulkResponse.errors()) {
+                log.warn("Some documents failed to transfer in index {}", indexName);
+            }
+        }
+    }
+
     @Override
     public void createIndex(ClusterConfig config, String indexName,
-                           Map<String, Object> settings, Map<String, Object> mappings)
+                            Map<String, Object> settings, Map<String, Object> mappings)
             throws ClusterConnectionException {
         RestClientTransport transport = null;
         try {
@@ -510,8 +525,8 @@ public class ElasticsearchService implements ClusterService {
 
     @Override
     public Map<String, Object> exportIndexData(ClusterConfig config, String indexName, int batchSize,
-                                                boolean includeSettings, boolean includeMappings,
-                                                boolean includeAliases) throws DataTransferException {
+                                               boolean includeSettings, boolean includeMappings,
+                                               boolean includeAliases) throws DataTransferException {
         try {
             return exportSingleIndex(config, indexName, batchSize, includeSettings, includeMappings, includeAliases);
         } catch (Exception e) {
@@ -529,33 +544,33 @@ public class ElasticsearchService implements ClusterService {
     }
 
     @Override
-    public Map<String, Object> searchDocuments(ClusterConfig config, String indexName, String query, int page, int size) 
+    public Map<String, Object> searchDocuments(ClusterConfig config, String indexName, String query, int page, int size)
             throws ClusterConnectionException {
         RestClientTransport transport = null;
         try {
             transport = createTransport(config);
             ElasticsearchClient client = new ElasticsearchClient(transport);
-            
+
             int from = page * size;
-            
+
             SearchResponse<ObjectNode> response;
             if (query != null && !query.trim().isEmpty()) {
                 response = client.search(s -> s
-                        .index(indexName)
-                        .from(from)
-                        .size(size)
-                        .query(q -> q
-                                .queryString(qs -> qs.query("*" + query + "*"))),
+                                .index(indexName)
+                                .from(from)
+                                .size(size)
+                                .query(q -> q
+                                        .queryString(qs -> qs.query("*" + query + "*"))),
                         ObjectNode.class);
             } else {
                 response = client.search(s -> s
-                        .index(indexName)
-                        .from(from)
-                        .size(size)
-                        .query(q -> q.matchAll(new MatchAllQuery.Builder().build())),
+                                .index(indexName)
+                                .from(from)
+                                .size(size)
+                                .query(q -> q.matchAll(new MatchAllQuery.Builder().build())),
                         ObjectNode.class);
             }
-            
+
             List<Map<String, Object>> documents = new ArrayList<>();
             for (Hit<ObjectNode> hit : response.hits().hits()) {
                 Map<String, Object> doc = new HashMap<>();
@@ -564,15 +579,15 @@ public class ElasticsearchService implements ClusterService {
                 doc.put("_source", convertToMap(hit.source()));
                 documents.add(doc);
             }
-            
+
             long total = response.hits().total() != null ? response.hits().total().value() : 0;
-            
+
             Map<String, Object> result = new HashMap<>();
             result.put("documents", documents);
             result.put("total", total);
             result.put("page", page);
             result.put("size", size);
-            
+
             return result;
         } catch (Exception e) {
             log.error("Failed to search documents in index {}", indexName, e);
@@ -583,24 +598,24 @@ public class ElasticsearchService implements ClusterService {
     }
 
     @Override
-    public Map<String, Object> getDocument(ClusterConfig config, String indexName, String docId) 
+    public Map<String, Object> getDocument(ClusterConfig config, String indexName, String docId)
             throws ClusterConnectionException {
         RestClientTransport transport = null;
         try {
             transport = createTransport(config);
             ElasticsearchClient client = new ElasticsearchClient(transport);
-            
+
             var response = client.get(g -> g.index(indexName).id(docId), ObjectNode.class);
-            
+
             if (!response.found()) {
                 return null;
             }
-            
+
             Map<String, Object> doc = new HashMap<>();
             doc.put("_id", response.id());
             doc.put("_index", response.index());
             doc.put("_source", convertToMap(response.source()));
-            
+
             return doc;
         } catch (Exception e) {
             log.error("Failed to get document {} from index {}", docId, indexName, e);
@@ -643,19 +658,33 @@ public class ElasticsearchService implements ClusterService {
 
     @SuppressWarnings("unchecked")
     private void bulkImportDocuments(ElasticsearchClient client, String indexName,
-                                    List<Map<String, Object>> documents) throws IOException {
-        int batchSize = 1000;
-        for (int i = 0; i < documents.size(); i += batchSize) {
-            List<Map<String, Object>> batch = documents.subList(i, Math.min(i + batchSize, documents.size()));
+                                     List<Map<String, Object>> documents) throws IOException {
+        List<BulkOperation> bulkOperations = new ArrayList<>();
+        long currentBatchBytes = 0;
 
-            List<BulkOperation> bulkOperations = batch.stream()
-                    .map(doc -> {
-                        final String docId = (String) doc.get("_id");
-                        final Object source = doc.get("_source");
-                        return BulkOperation.of(b -> b.index(idx -> idx.index(indexName).id(docId).document(source)));
-                    })
-                    .collect(Collectors.toList());
+        for (Map<String, Object> doc : documents) {
+            final String docId = (String) doc.get("_id");
+            final Object source = doc.get("_source");
 
+            // Calculate approximate JSON size
+            byte[] docBytes = objectMapper.writeValueAsBytes(source);
+            long docSize = docBytes.length;
+
+            if (!bulkOperations.isEmpty() &&
+                    (currentBatchBytes + docSize > MAX_BULK_SIZE_BYTES || bulkOperations.size() >= MAX_BULK_DOC_COUNT)) {
+
+                log.debug("Flushing bulk batch for import: {} docs, {} bytes", bulkOperations.size(), currentBatchBytes);
+                client.bulk(br -> br.operations(bulkOperations));
+
+                bulkOperations.clear();
+                currentBatchBytes = 0;
+            }
+
+            bulkOperations.add(BulkOperation.of(b -> b.index(idx -> idx.index(indexName).id(docId).document(source))));
+            currentBatchBytes += docSize;
+        }
+
+        if (!bulkOperations.isEmpty()) {
             client.bulk(br -> br.operations(bulkOperations));
         }
     }
@@ -672,10 +701,10 @@ public class ElasticsearchService implements ClusterService {
             for (Map.Entry<String, Object> entry : aliases.entrySet()) {
                 String aliasName = entry.getKey();
                 Map<String, Object> aliasDef = (Map<String, Object>) entry.getValue();
-                
+
                 client.indices().putAlias(a -> {
                     var builder = a.index(indexName).name(aliasName);
-                    
+
                     if (aliasDef.containsKey("index_routing")) {
                         builder.indexRouting((String) aliasDef.get("index_routing"));
                     }
@@ -685,7 +714,7 @@ public class ElasticsearchService implements ClusterService {
                     if (aliasDef.containsKey("is_write_index")) {
                         builder.isWriteIndex((Boolean) aliasDef.get("is_write_index"));
                     }
-                    
+
                     return builder;
                 });
                 log.info("Created alias {} for index {}", aliasName, indexName);
@@ -696,8 +725,8 @@ public class ElasticsearchService implements ClusterService {
     }
 
     public Map<String, Object> exportSingleIndex(ClusterConfig config, String indexName,
-                                                  int batchSize, boolean includeSettings,
-                                                  boolean includeMappings, boolean includeAliases) {
+                                                 int batchSize, boolean includeSettings,
+                                                 boolean includeMappings, boolean includeAliases) {
         RestClientTransport transport = null;
         try {
             transport = createTransport(config);
@@ -752,10 +781,10 @@ public class ElasticsearchService implements ClusterService {
             boolean hasMoreData = true;
 
             SearchResponse<ObjectNode> searchResponse = client.search(s -> s
-                    .index(indexName)
-                    .size(batchSize)
-                    .scroll(t -> t.time("1m"))
-                    .query(q -> q.matchAll(new MatchAllQuery.Builder().build())),
+                            .index(indexName)
+                            .size(batchSize)
+                            .scroll(t -> t.time("1m"))
+                            .query(q -> q.matchAll(new MatchAllQuery.Builder().build())),
                     ObjectNode.class);
 
             while (hasMoreData) {
@@ -772,8 +801,8 @@ public class ElasticsearchService implements ClusterService {
                 } else {
                     final String finalScrollId = scrollId;
                     ScrollResponse<ObjectNode> scrollResponse = client.scroll(sc -> sc
-                            .scrollId(finalScrollId)
-                            .scroll(t -> t.time("1m")),
+                                    .scrollId(finalScrollId)
+                                    .scroll(t -> t.time("1m")),
                             ObjectNode.class);
 
                     if (scrollResponse.hits().hits().isEmpty()) {
@@ -824,11 +853,11 @@ public class ElasticsearchService implements ClusterService {
 
             // Check if index exists first
             boolean exists = client.indices().exists(e -> e.index(indexName)).value();
-            
+
             if (!exists) {
                 Map<String, Object> settings = (Map<String, Object>) indexData.get("settings");
                 Map<String, Object> mappings = (Map<String, Object>) indexData.get("mappings");
-                
+
                 try {
                     createIndex(config, indexName, settings, mappings);
                 } catch (Exception e) {
